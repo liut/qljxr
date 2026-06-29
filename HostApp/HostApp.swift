@@ -3,8 +3,9 @@ import SwiftUI
 @main
 struct HostApp: App {
     var body: some Scene {
-        Settings {
-            EmptyView()
+        WindowGroup {
+            Text("JXR QuickLook Helper")
+                .padding()
         }
     }
 }

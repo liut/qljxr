@@ -18,6 +18,12 @@ class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             throw JXRDecodeError.decodeFailed
         }
 
-        return QLPreviewReply(data: pngData, contentType: .png)
+        let contentType = UTType("public.png")!
+
+        let reply = QLPreviewReply(dataOfContentType: contentType, contentSize: CGSize(width: decoded.width, height: decoded.height)) { _ in
+            return pngData
+        }
+
+        return reply
     }
 }
