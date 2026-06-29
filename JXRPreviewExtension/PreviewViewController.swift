@@ -9,9 +9,8 @@ class PreviewViewController: NSViewController, QLPreviewingController {
         do {
             let data = try Data(contentsOf: url)
             let decoded = try decodeJXR(data: data)
-            defer { free_jxr_buffer(decoded.pixels) }
             guard let nsImage = makeNSImage(from: decoded) else {
-                throw JXRDecodeError.decodeFailed
+                throw JXRDecodeError.decodeFailed(-99)
             }
             result = .success(nsImage)
         } catch {
@@ -23,8 +22,14 @@ class PreviewViewController: NSViewController, QLPreviewingController {
             switch result {
             case .success(let image):
                 previewView = JXRPreviewView(image: image)
-            case .failure:
-                previewView = JXRPreviewView(error: "无法预览此 JPEG XR 文件")
+            case .failure(let error):
+                let msg: String
+                if let jxrErr = error as? JXRDecodeError {
+                    msg = jxrErr.description
+                } else {
+                    msg = error.localizedDescription
+                }
+                previewView = JXRPreviewView(error: msg)
             }
 
             let hostingView = NSHostingView(rootView: previewView)

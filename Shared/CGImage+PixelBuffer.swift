@@ -19,7 +19,7 @@ func makeCGImage(from decoded: JXRDecodedImage) -> CGImage? {
         data: NSData(
             bytesNoCopy: decoded.pixels,
             length: bytesPerRow * decoded.height,
-            freeWhenDone: false
+            freeWhenDone: true
         )
     ) else {
         return nil

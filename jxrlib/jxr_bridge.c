@@ -8,72 +8,67 @@
 #include "windowsmediaphoto.h"
 #include "JXRGlue.h"
 
-void free_jxr_buffer(void *ptr) {
-    free(ptr);
-}
+void free_jxr_buffer(void *ptr) { free(ptr); }
 
 int jxr_decode_from_memory(
-    const uint8_t *data,
-    size_t len,
-    uint8_t **outPixels,
-    int *outWidth,
-    int *outHeight,
-    int *outStride
+    const uint8_t *data, size_t len,
+    uint8_t **outPixels, int *outWidth, int *outHeight, int *outStride
 ) {
     PKFactory *pFactory = NULL;
     PKCodecFactory *pCodecFactory = NULL;
     struct WMPStream *pStream = NULL;
     PKImageDecode *pDecoder = NULL;
+    PKFormatConverter *pConverter = NULL;
     ERR err;
 
-    err = PKCreateFactory(&pFactory, PK_SDK_VERSION);
-    if (err != 0) return -1;
-
-    err = PKCreateCodecFactory(&pCodecFactory, WMP_SDK_VERSION);
-    if (err != 0) return -1;
-
-    CreateWS_Memory(&pStream, (U8 *)data, (size_t)len);
-    if (!pStream) return -1;
-
+    if (PKCreateFactory(&pFactory, PK_SDK_VERSION)) return -1;
+    if (PKCreateCodecFactory(&pCodecFactory, WMP_SDK_VERSION)) return -2;
+    CreateWS_Memory(&pStream, (U8*)data, len);
+    if (!pStream) return -3;
     PKImageDecode_Create_WMP(&pDecoder);
-    if (!pDecoder) return -1;
-
-    err = pDecoder->Initialize(pDecoder, pStream);
-    if (err != 0) {
-        pDecoder->Release(&pDecoder);
-        return -1;
-    }
-
-    pDecoder->guidPixFormat = GUID_PKPixelFormat32bppBGRA;
+    if (!pDecoder) return -4;
+    if (pDecoder->Initialize(pDecoder, pStream)) { pDecoder->Release(&pDecoder); return -5; }
 
     I32 w = 0, h = 0;
     pDecoder->GetSize(pDecoder, &w, &h);
-    if (w <= 0 || h <= 0) {
+    *outWidth = w; *outHeight = h;
+
+    // HDR/float formats: not yet supported for preview
+    U8 bd = pDecoder->WMP.wmiI.bdBitDepth;
+    if (bd == BD_32F || bd == BD_32S || bd == BD_16F || bd == BD_16S) {
         pDecoder->Release(&pDecoder);
-        return -1;
+        return -12;
     }
 
-    *outWidth = (int)w;
-    *outHeight = (int)h;
+    // Standard 8/16-bit: try format converter for proper BGRA output
+    if (pCodecFactory->CreateFormatConverter(&pConverter) == 0 && pConverter) {
+        if (pConverter->Initialize(pConverter, pDecoder, ".jxr", GUID_PKPixelFormat32bppBGRA) != 0) {
+            pConverter->Release(&pConverter);
+            pConverter = NULL;
+        }
+    }
 
-    U32 stride_val = (U32)(((w * 4) + 15) & ~15u);
-    *outStride = (int)stride_val;
-
-    U8 *pixels = (U8 *)malloc(stride_val * h);
+    U32 stride = (U32)((w * 4 + 15) & ~15u);
+    U8 *pixels = (U8 *)malloc((size_t)stride * h);
     if (!pixels) {
+        if (pConverter) pConverter->Release(&pConverter);
         pDecoder->Release(&pDecoder);
-        return -1;
+        return -7;
     }
 
     PKRect rect = {0, 0, w, h};
-    err = pDecoder->Copy(pDecoder, &rect, pixels, stride_val);
-    if (err != 0) {
-        free(pixels);
-        pDecoder->Release(&pDecoder);
-        return -1;
+    if (pConverter) {
+        err = pConverter->Copy(pConverter, &rect, pixels, stride);
+        pConverter->Release(&pConverter);
+    } else {
+        pDecoder->guidPixFormat = GUID_PKPixelFormat32bppBGRA;
+        err = pDecoder->Copy(pDecoder, &rect, pixels, stride);
     }
-
     pDecoder->Release(&pDecoder);
+
+    if (err) { free(pixels); return -9; }
+
     *outPixels = pixels;
+    *outStride = (int)stride;
     return 0;
 }
