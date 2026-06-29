@@ -4,11 +4,11 @@ import SwiftUI
 
 class PreviewViewController: NSViewController, QLPreviewingController {
 
-    func preparePreviewOfFile(at url: URL) async throws {
+    func preparePreviewOfFile(at url: URL, completionHandler handler: @escaping (Error?) -> Void) {
         let result: Result<NSImage, Error>
         do {
             let data = try Data(contentsOf: url)
-            let decoded = try decodeJXR(data: data)
+            let decoded = try decodeJXRWithHDRFallback(data: data)
             guard let nsImage = makeNSImage(from: decoded) else {
                 throw JXRDecodeError.decodeFailed(-99)
             }
@@ -17,7 +17,7 @@ class PreviewViewController: NSViewController, QLPreviewingController {
             result = .failure(error)
         }
 
-        await MainActor.run {
+        DispatchQueue.main.async {
             let previewView: JXRPreviewView
             switch result {
             case .success(let image):
@@ -42,6 +42,8 @@ class PreviewViewController: NSViewController, QLPreviewingController {
                 hostingView.topAnchor.constraint(equalTo: self.view.topAnchor),
                 hostingView.bottomAnchor.constraint(equalTo: self.view.bottomAnchor),
             ])
+
+            handler(nil)
         }
     }
 }
