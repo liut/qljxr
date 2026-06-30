@@ -39,6 +39,7 @@ preview: deploy register
 deploy: build
 	rm -rf /Applications/$(PRODUCT_NAME).app
 	cp -R $(RELEASE_APP_PATH) /Applications/
+	$(MAKE) register
 
 # Register the QuickLook extension with pluginkit.
 # macOS caches extension metadata; force-refresh after each deploy.

@@ -5,14 +5,17 @@ import SwiftUI
 class PreviewViewController: NSViewController, QLPreviewingController {
 
     func preparePreviewOfFile(at url: URL, completionHandler handler: @escaping (Error?) -> Void) {
-        let result: Result<NSImage, Error>
+        let result: Result<(NSImage, String), Error>
         do {
             let data = try Data(contentsOf: url)
             let decoded = try decodeJXRWithHDRFallback(data: data)
             guard let nsImage = makeNSImage(from: decoded) else {
                 throw JXRDecodeError.decodeFailed(-99)
             }
-            result = .success(nsImage)
+            let fileSize = ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)
+            let format = decoded.isHDR ? "HDR float" : "SDR"
+            let meta = "\(decoded.width)×\(decoded.height) · \(format) · \(fileSize)"
+            result = .success((nsImage, meta))
         } catch {
             result = .failure(error)
         }
@@ -20,8 +23,8 @@ class PreviewViewController: NSViewController, QLPreviewingController {
         DispatchQueue.main.async {
             let previewView: JXRPreviewView
             switch result {
-            case .success(let image):
-                previewView = JXRPreviewView(image: image)
+            case .success(let (image, meta)):
+                previewView = JXRPreviewView(image: image, metadata: meta)
             case .failure(let error):
                 let msg: String
                 if let jxrErr = error as? JXRDecodeError {
