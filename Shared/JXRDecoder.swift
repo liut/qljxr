@@ -33,6 +33,7 @@ struct JXRDecodedImage {
     let width: Int
     let height: Int
     let stride: Int
+    let isHDR: Bool
 }
 
 func decodeJXR(data: Data) throws -> JXRDecodedImage {
@@ -52,41 +53,78 @@ func decodeJXR(data: Data) throws -> JXRDecodedImage {
         throw JXRDecodeError.decodeFailed(result)
     }
 
-    return JXRDecodedImage(pixels: pixels, width: Int(width), height: Int(height), stride: Int(stride))
+    // Decoder outputs BGRA; swap to RGBA for CGImage (byteOrder32Big + premultipliedLast).
+    let w = Int(width), h = Int(height), s = Int(stride)
+    for y in 0..<h {
+        let row = pixels.advanced(by: y * s)
+        for x in 0..<w {
+            let p = row.advanced(by: x * 4)
+            let tmp = p[0]; p[0] = p[2]; p[2] = tmp
+        }
+    }
+
+    return JXRDecodedImage(pixels: pixels, width: w, height: h, stride: s, isHDR: false)
 }
 
 // MARK: - HDR float decode + tonemap
 
-/// Pre-computed LUT: scRGB linear → sRGB u8 via Reinhard + gamma.  4096 entries cover 0..~16.
-private let tonemapLUT: [UInt8] = {
+/// Pre-computed LUT: linear → sRGB u8 gamma only.  4096 entries cover 0..~16.
+private let gammaLUT: [UInt8] = {
     var lut = [UInt8](repeating: 0, count: 4096)
     for i in 0..<4096 {
         let linear = Float(i) / 256.0
-        let tonemapped = linear / (linear + 1.0)
-        let srgb = tonemapped <= 0.0031308 ? 12.92 * tonemapped : 1.055 * powf(tonemapped, 1.0/2.4) - 0.055
+        let srgb = linear <= 0.0031308 ? 12.92 * linear : 1.055 * powf(linear, 1.0/2.4) - 0.055
         lut[i] = UInt8(max(0, min(255, srgb * 255.0 + 0.5)))
     }
     return lut
 }()
 
-/// Tonemap scRGB linear float RGBA → sRGB BGRA u8.  Uses malloc for CGDataProvider compatibility.
+/// Tonemap scRGB linear float RGBA → sRGB BGRA u8 with luminance normalization.
+/// SDR pixels (L ≤ 1): unchanged.  HDR pixels (L > 1): scaled by 1/L to preserve
+/// colour ratios while keeping luminance ≤ 1.  Uses malloc for CGDataProvider compatibility.
 func tonemapHDRToBGRA(floatPixels: UnsafePointer<Float>, width: Int, height: Int, floatStride: Int) -> (pixels: UnsafeMutablePointer<UInt8>, stride: Int) {
     let outStride = ((width * 4 + 15) & ~15)
     let outPixels = malloc(outStride * height)!.assumingMemoryBound(to: UInt8.self)
     let pixelCount = width * height
     let N = vDSP_Length(pixelCount)
+    let rowFloats = floatStride / 4
 
     let r = UnsafeMutablePointer<Float>.allocate(capacity: pixelCount)
     let g = UnsafeMutablePointer<Float>.allocate(capacity: pixelCount)
     let b = UnsafeMutablePointer<Float>.allocate(capacity: pixelCount)
-    defer { r.deallocate(); g.deallocate(); b.deallocate() }
+    let l = UnsafeMutablePointer<Float>.allocate(capacity: pixelCount)
+    defer { r.deallocate(); g.deallocate(); b.deallocate(); l.deallocate() }
 
-    for i in 0..<pixelCount { r[i] = floatPixels[i*4]; g[i] = floatPixels[i*4+1]; b[i] = floatPixels[i*4+2] }
+    // Deinterleave RGBA → planar, clip negatives
+    for y in 0..<height {
+        let src = floatPixels.advanced(by: y * rowFloats)
+        let dst = y * width
+        for x in 0..<width {
+            let si = x * 4; let di = dst + x
+            r[di] = max(src[si],     0)
+            g[di] = max(src[si + 1], 0)
+            b[di] = max(src[si + 2], 0)
+        }
+    }
 
-    var zero: Float = 0; var hi = Float.greatestFiniteMagnitude
-    var scale: Float = 256.0; var lutMax: Float = 4094.999
+    // L = 0.2126*R + 0.7152*G + 0.0722*B
+    var rW: Float = 0.2126, gW: Float = 0.7152, bW: Float = 0.0722
+    vDSP_vclr(l, 1, N)
+    vDSP_vsma(r, 1, &rW, l, 1, l, 1, N)
+    vDSP_vsma(g, 1, &gW, l, 1, l, 1, N)
+    vDSP_vsma(b, 1, &bW, l, 1, l, 1, N)
+
+    // Luminance normalization: SDR pixels (L ≤ 1) unchanged; HDR pixels (L > 1)
+    // divided by L to preserve colour ratios while keeping luminance ≤ 1.
+    var one: Float = 1.0, inf = Float.greatestFiniteMagnitude
+    vDSP_vclip(l, 1, &one, &inf, l, 1, N)  // l = max(L, 1)
+    vDSP_vdiv(l, 1, r, 1, r, 1, N)         // r = r / l
+    vDSP_vdiv(l, 1, g, 1, g, 1, N)         // g = g / l
+    vDSP_vdiv(l, 1, b, 1, b, 1, N)         // b = b / l
+
+    // Scale for LUT, clip to range
+    var zero: Float = 0; var scale: Float = 256.0; var lutMax: Float = 4094.999
     for plane in [r, g, b] {
-        vDSP_vclip(plane, 1, &zero, &hi, plane, 1, N)
         vDSP_vsmul(plane, 1, &scale, plane, 1, N)
         vDSP_vclip(plane, 1, &zero, &lutMax, plane, 1, N)
     }
@@ -99,15 +137,19 @@ func tonemapHDRToBGRA(floatPixels: UnsafePointer<Float>, width: Int, height: Int
     vDSP_vfixu16(g, 1, gi, 1, N)
     vDSP_vfixu16(b, 1, bi, 1, N)
 
-    let lut = tonemapLUT
-    for i in 0..<pixelCount {
-        let d = i * 4
-        outPixels[d] = lut[Int(bi[i])]; outPixels[d+1] = lut[Int(gi[i])]
-        outPixels[d+2] = lut[Int(ri[i])]; outPixels[d+3] = 255
+    let lut = gammaLUT
+    for y in 0..<height {
+        let rowStart = y * outStride
+        let srcRow = y * width
+        for x in 0..<width {
+            let d = rowStart + x * 4
+            let s = srcRow + x
+            outPixels[d]     = lut[Int(ri[s])]
+            outPixels[d + 1] = lut[Int(gi[s])]
+            outPixels[d + 2] = lut[Int(bi[s])]
+            outPixels[d + 3] = 255
+        }
     }
-
-    let padEnd = width * 4
-    if padEnd < outStride { memset(outPixels + (height-1) * outStride + padEnd, 0, outStride - padEnd) }
 
     return (outPixels, outStride)
 }
@@ -137,5 +179,5 @@ func decodeJXRHDR(data: Data) throws -> JXRDecodedImage {
     defer { free(fp) }
 
     let (u8, u8Stride) = tonemapHDRToBGRA(floatPixels: fp, width: Int(width), height: Int(height), floatStride: Int(stride))
-    return JXRDecodedImage(pixels: u8, width: Int(width), height: Int(height), stride: u8Stride)
+    return JXRDecodedImage(pixels: u8, width: Int(width), height: Int(height), stride: u8Stride, isHDR: true)
 }

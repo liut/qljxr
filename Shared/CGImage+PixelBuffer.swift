@@ -12,7 +12,7 @@ func makeCGImage(from decoded: JXRDecodedImage) -> CGImage? {
 
     let bitmapInfo = CGBitmapInfo(
         rawValue: CGImageAlphaInfo.premultipliedLast.rawValue
-                | CGBitmapInfo.byteOrder32Little.rawValue
+                | CGBitmapInfo.byteOrder32Big.rawValue
     )
 
     guard let dataProvider = CGDataProvider(
