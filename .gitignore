@@ -32,7 +32,6 @@ xcuserdata/
 .swiftpm/
 Packages/
 Package.resolved
-*.xcodeproj
 
 # Swift
 *.swiftmodule
