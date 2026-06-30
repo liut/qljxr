@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (Release)
+        run: |
+          xcodebuild -project QLJPEGXR.xcodeproj \
+            -scheme QLJPEGXR \
+            -configuration Release \
+            -derivedDataPath .build \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=YES \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Package
+        run: |
+          APP=".build/Build/Products/Release/QLJPEGXR.app"
+          ZIP="QLJPEGXR-${GITHUB_REF_NAME#v}.zip"
+          ditto -c -k --keepParent "$APP" "$ZIP"
+          echo "artifact=$ZIP" >> $GITHUB_ENV
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.artifact }}
+          generate_release_notes: true
